@@ -7,6 +7,7 @@ import { store } from '../store'
 import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
 import { dispatchMcNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone } from './notificationEvent'
+import { announceApprovalPending } from './approvalAttention'
 import { shouldNotifyOnChatComplete } from './chatCompleteNotify'
 import { emitThemeSound } from './themeSound'
 import { streamingFlushHoldMs } from '../lib/streamHold'
@@ -1645,22 +1646,7 @@ export function useWebSocket() {
                 typeof data.slot === 'string' ? data.slot : '',
               )
             }
-            // Approval-blocked chime: the agent is stuck until the user acts.
-            // Suppressed during reconnect catch-up (same policy as turn-done).
-            if (!reconnectingRef.current) {
-              dispatchMcNotification(APPROVAL_KIND)
-            }
-            // Browser notification when tab not focused (permission must be granted via UI interaction elsewhere)
-            if (typeof Notification !== 'undefined' && document.hidden && Notification.permission === 'granted') {
-              // Android Chrome throws "Illegal constructor" for page-context
-              // Notification; an uncaught throw here kills the whole message
-              // handler, so the native toast is best-effort.
-              try {
-                new Notification(i18nT('hooks.useWebSocket.approval_required'), { body: data.tool || i18nT('hooks.useWebSocket.a_task_needs_your_decision'), tag: 'kirocrew-approval' })
-              } catch {
-                /* unsupported platform */
-              }
-            }
+            announceApprovalPending({ tool: data.tool, reconnecting: reconnectingRef.current })
             dispatch(addNotification({
               kind: 'approval',
               title: i18nT('hooks.useWebSocket.tool_approval', { name: data.tool || i18nT('hooks.useWebSocket.unknown') }),
@@ -1788,6 +1774,12 @@ export function useWebSocket() {
             }
             if (!isPassiveNote && data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
               dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', text: 'Thinking…', ts: Date.now() }))
+            }
+            // A dashboard-chat tool approval is this permission row; no
+            // `approval` frame follows it. A row that arrives already resolved
+            // is a settled decision, not a pending one.
+            if (data.role === 'permission' && data.slot && !data.meta?.resolved) {
+              announceApprovalPending({ tool: data.meta?.tool_title || data.content, reconnecting: reconnectingRef.current })
             }
             break
           case 'chat_message_update':
